@@ -1,0 +1,272 @@
+[gcode_macro PAUSE]
+description: Pause the actual running print
+rename_existing: PAUSE_BASE
+# change this if you need more or less extrusion
+variable_extrude: 1.0
+gcode:
+  ##### read E from pause macro #####
+  {% set E = printer["gcode_macro PAUSE"].extrude|float %}
+  ##### set park positon for x and y #####
+  # default is your max posion from your printer.cfg
+  {% set x_park = printer.toolhead.axis_maximum.x|float - 5.0 %}
+  {% set y_park = printer.toolhead.axis_maximum.y|float - 5.0 %}
+  ##### calculate save lift position #####
+  {% set max_z = printer.toolhead.axis_maximum.z|float %}
+  {% set act_z = printer.toolhead.position.z|float %}
+  {% if act_z < (max_z - 2.0) %}
+      {% set z_safe = 2.0 %}
+  {% else %}
+      {% set z_safe = max_z - act_z %}
+  {% endif %}
+  ##### end of definitions #####
+  PAUSE_BASE
+  G91
+  {% if printer.extruder.can_extrude|lower == 'true' %}
+    G1 E-{E} F2100
+  {% else %}
+    {action_respond_info("Extruder not hot enough")}
+  {% endif %}
+  {% if "xyz" in printer.toolhead.homed_axes %}
+    G1 Z{z_safe} F900
+    G90
+    G1 X{x_park} Y{y_park} F6000
+  {% else %}
+    {action_respond_info("Printer not homed")}
+  {% endif %} 
+  
+[gcode_macro RESUME]
+description: Resume the actual running print
+rename_existing: RESUME_BASE
+gcode:
+  ##### read E from pause macro #####
+  {% set E = printer["gcode_macro PAUSE"].extrude|float %}
+  #### get VELOCITY parameter if specified ####
+  {% if 'VELOCITY' in params|upper %}
+    {% set get_params = ('VELOCITY=' + params.VELOCITY)  %}
+  {%else %}
+    {% set get_params = "" %}
+  {% endif %}
+  ##### end of definitions #####
+  {% if printer.extruder.can_extrude|lower == 'true' %}
+    G91
+    G1 E{E} F2100
+  {% else %}
+    {action_respond_info("Extruder not hot enough")}
+  {% endif %}  
+  RESUME_BASE {get_params}
+  
+[gcode_macro CANCEL_PRINT]
+description: Cancel the actual running print
+rename_existing: CANCEL_PRINT_BASE
+gcode:
+  {% set x_park = printer.toolhead.axis_maximum.x|float - 5.0 %}
+  {% set y_park = printer.toolhead.axis_maximum.y|float - 5.0 %}
+  {% set z_safe = 6 %}
+  
+  TURN_OFF_HEATERS
+  CANCEL_PRINT_BASE
+  SDCARD_RESET_FILE
+  M106 S0
+    {% if "xyz" in printer.toolhead.homed_axes %}
+    G91
+    G1 Z{z_safe} F900
+    G90
+    G1 X{x_park} Y{y_park} F6000
+  {% else %}
+    {action_respond_info("Printer not homed")}
+  {% endif %} 
+
+[gcode_macro SCREWS_TILT_CALCULATE]
+rename_existing: SCREWS_TILT_CALCULATE_BASE
+gcode:
+       G28 Z
+       SCREWS_TILT_CALCULATE_BASE
+       G90
+       G1 Z10 F6000
+           
+[gcode_macro PRESSURE_ADVANCE]
+gcode:
+    {% if 'K' in params %}
+        SET_PRESSURE_ADVANCE ADVANCE={ params.K|float }
+    {% endif %}
+    {% if 'T' in params %}
+        SET_pressure_advance smooth_time={ params.T|float }
+    {% endif %}
+
+[gcode_macro PRINT_START]
+variable_extruder: 210
+variable_bed: 60
+gcode:
+   
+    M118 Preheating
+    #PreHeating bed
+    {% set bed_temp = params.BED_TEMP|default(60) %}
+    {% set extruder_temp= params.EXTRUDER_TEMP|default(210) %}
+    
+    {% if bed_temp > 90 %}
+        {% set bed_temp_preheat = bed_temp * 0.95 | int %}
+    {% else %}
+        {% set bed_temp_preheat = bed_temp * 0.90 | int %}
+    {% endif %}
+
+    {% if bed_temp|float >= 70|int %}
+     M118 Set Mesh PETG
+     BED_MESH_PROFILE LOAD=PETG
+     SET_RETRACTION RETRACT_LENGTH=0.4
+     SET_RETRACTION RETRACT_SPEED=35
+     SET_RETRACTION UNRETRACT_SPEED=35
+     pressure_advance K=0.02 T=0.04
+     {% elif bed_temp|float >= 50|int %}
+     M118 Set Mesh PLA
+     BED_MESH_PROFILE LOAD=PLA
+     SET_RETRACTION RETRACT_LENGTH=0.25
+     SET_RETRACTION RETRACT_SPEED=35
+     SET_RETRACTION UNRETRACT_SPEED=35
+     pressure_advance K=0.02 T=0.04
+        {% else %}
+     M118 Set Mesh PLA
+     BED_MESH_PROFILE LOAD=PLA
+     SET_RETRACTION RETRACT_LENGTH=0.25
+     SET_RETRACTION RETRACT_SPEED=35
+     SET_RETRACTION UNRETRACT_SPEED=35
+     pressure_advance K=0.02 T=0.04
+         {% endif %}
+
+    M190 S{bed_temp_preheat|int}    ; set and wait bed preheat temp = 90-95%
+
+    #Heat extruder
+    M118 Heating
+    M104 S{extruder_temp|int}       ; set extruder temp
+    M140 S{bed_temp|int}            ; set bed temp
+    M109 S{extruder_temp|int}       ; wait to extruder temp
+
+    #Wait for bed heat
+    M190 S{bed_temp|int}            ; wait to bed temp
+
+    M118 Homing
+    #Prepare to print PrimeLine
+    G90 ; use absolute coordinates
+    M83 ; extruder relative mode
+    G28 ; home all axes
+
+    #_SAFE_PARK ; Move head to safe place
+   
+    
+    M118 Primeline
+    #Prime line
+    G1 Z10 F3000
+    G1 X255 F4000
+    G1 Z4.5 F3000
+    G1 E10 F300
+    G1 X210 F4000
+    
+     #_Set OFFSET Z
+
+    {% if bed_temp|float >= 70|int %}
+     M118 Set OFFSET Z
+     SET_GCODE_OFFSET Z=0.15 MOVE=1
+    {% elif bed_temp|float >= 50|int %}
+     M118 Set OFFSET Z
+     SET_GCODE_OFFSET Z=-0.0 MOVE=1
+    {% else %}
+     M118 Set OFFSET Z
+     SET_GCODE_OFFSET Z=-0.0 MOVE=1
+    {% endif %}
+
+    #Save cur lauer
+    #SET_GCODE_VARIABLE MACRO=_LAYER_CHANGE VARIABLE=layer_cur VALUE=0
+
+    ####################################################################################
+#Macros on Layer change, using for Timelapse and etc 
+####################################################################################
+#[gcode_macro _LAYER_CHANGE]
+#description: Increace Layer counter, TIMELAPSE_PIC, etc
+#variable_layer_cur: 0
+#gcode:
+    #{% set layer_n = printer['gcode_macro _LAYER_CHANGE'].layer_cur|int +1 %}
+    #M118 Layer change, current {layer_n}
+
+    #Take TimeLapse pic
+    #_TIMELAPSE_PIC
+
+    #Save cur lauer
+    #SET_GCODE_VARIABLE MACRO=_LAYER_CHANGE VARIABLE=layer_cur VALUE={layer_n}
+
+#[gcode_macro LAYER_CURRENT]
+#gcode:
+    #{% set layer_n = printer['gcode_macro _LAYER_CHANGE'].layer_cur|int %}
+    #M118 Current layer: {layer_n}
+
+    #Save cur lauer
+    #SET_GCODE_VARIABLE MACRO=_LAYER_CHANGE VARIABLE=layer_cur VALUE=0
+
+[gcode_macro PRINT_END]
+gcode:
+    #_SAFE_PARK
+  M118 PRINT_END
+	G92 E0                         ; zero the extruder
+	G1 E-2.0 F3600                ; retract filament
+	G91                            ; relative positioning
+	TURN_OFF_HEATERS
+	M106 S255
+    UPDATE_DELAYED_GCODE ID=_SHUT_OFF DURATION=10
+    G91
+    G1 Z2 F1600
+    G90
+    G1 Y219 X255 F3600
+    M118  UNRETRACT_FILAMENT
+    M83
+    G1 E-100 F1500
+[delayed_gcode _SHUT_OFF]
+gcode:
+  M118 SHUT_OFF
+    M107
+    M84
+  M118  SDCARD_RESET_FILE
+  SDCARD_RESET_FILE
+
+[gcode_macro PLA]
+gcode:
+    BED_MESH_PROFILE LOAD=PLA
+
+[gcode_macro PETG]
+gcode:
+    BED_MESH_PROFILE LOAD=PETG
+
+#[gcode_macro G29]
+#gcode:
+#    BED_MESH_PROFILE LOAD=default
+
+#[gcode_macro MESH]
+#gcode:
+#{% set bed = printer.heater_bed.temperature|float %}
+#{% if bed|float <= 60|int %}
+#BED_MESH_PROFILE LOAD=PETG
+
+
+
+#[gcode_macro RETRACT]
+#gcode:
+#    {% if params.L is not defined %}
+#        {% set L = printer.configfile.settings.firmware_retraction.retract_length|float %}
+#    {% endif %}
+#    {% if params.S is not defined %}
+#        {% set S = printer.configfile.settings.firmware_retraction.retract_speed|float %}
+#    {% endif %}
+#    SET_RETRACTION RETRACT_LENGTH={L} RETRACT_SPEED={S}
+
+#[gcode_macro UNRETRACT]
+#gcode:
+#    {% if params.L is not defined %}
+#        {% set L = printer.configfile.settings.firmware_retraction.unretract_extra_length|float %}
+#    {% endif %}
+#    {% if params.S is not defined %}
+#        {% set S = printer.configfile.settings.firmware_retraction.unretract_speed|float %}
+#    {% endif %}
+#    SET_RETRACTION UNRETRACT_EXTRA_LENGTH={L} UNRETRACT_SPEED={S}
+
+
+#[gcode_macro BED_MESH_CALIBRATE]
+#gcode:
+    #G28
+    #BED_MESH_CALIBRATE
